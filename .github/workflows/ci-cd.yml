@@ -1,0 +1,73 @@
+name: Nextcloud PM CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    name: 1. Валидация и проверка синтаксиса
+    runs-on: ubuntu-latest
+    steps:
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
+
+      - name: Проверка синтаксиса Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config
+
+      - name: Проверка конфигурации Nginx
+        run: |
+          sh scripts/gen-cert.sh
+          docker run --rm -v $(pwd)/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+                          -v $(pwd)/nginx/certs:/etc/nginx/certs:ro \
+                          nginx:1.27-alpine nginx -t
+
+      - name: Проверка shell-сценариев (ShellCheck)
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck scripts/*.sh
+
+  test-deploy:
+    name: 2. Тестовое развёртывание и интеграционные тесты
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
+
+      - name: Подготовка окружения
+        run: |
+          cp .env.example .env
+          sh scripts/gen-cert.sh
+
+      - name: Запуск контейнерного стека
+        run: |
+          docker compose up -d
+          echo "Ожидание запуска сервисов..."
+          sleep 20
+          docker compose ps
+
+      - name: Проверка доступности Nextcloud через Reverse Proxy
+        run: |
+          curl -k -I -f https://localhost | grep -E "HTTP/(1.1|2) (200|302)"
+          echo "Nextcloud успешно отвечает по HTTPS!"
+
+      - name: Остановка тестового стенда
+        if: always()
+        run: docker compose down -v
+
+  deploy-prod:
+    name: 3. Автоматический деплой в кластер (CD)
+    needs: test-deploy
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Деплой на целевой сервер
+        run: |
+          echo "Имитация развёртывания в Docker Swarm кластер:"
+          echo "docker stack deploy -c docker-stack.yml nextcloud-cluster"
+          echo "Деплой успешно завершён!"
